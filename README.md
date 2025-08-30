@@ -1,2 +1,2 @@
-ChatOpenAIIntegration 3
+ChatOpenAIIntegration 4
 
