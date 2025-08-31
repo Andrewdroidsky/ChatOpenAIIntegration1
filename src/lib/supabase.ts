@@ -26,6 +26,7 @@ export type Database = {
           title: string;
           created_at: string;
           updated_at: string;
+          openai_thread_id: string | null;
         };
         Insert: {
           id?: string;
@@ -33,6 +34,7 @@ export type Database = {
           title?: string;
           created_at?: string;
           updated_at?: string;
+          openai_thread_id?: string | null;
         };
         Update: {
           id?: string;
@@ -40,6 +42,7 @@ export type Database = {
           title?: string;
           created_at?: string;
           updated_at?: string;
+          openai_thread_id?: string | null;
         };
       };
       messages: {
@@ -100,37 +103,61 @@ export type Database = {
           updated_at?: string;
         };
       };
-    };
-    personalities: {
-      Row: {
-        id: string;
-        user_id: string;
-        name: string;
-        prompt: string;
-        is_active: boolean;
-        has_memory: boolean;
-        created_at: string;
-        updated_at: string;
-      };
-      Insert: {
-        id?: string;
-        user_id: string;
-        name: string;
-        prompt: string;
-        is_active?: boolean;
-        has_memory?: boolean;
-        created_at?: string;
-        updated_at?: string;
-      };
-      Update: {
-        id?: string;
-        user_id?: string;
-        name?: string;
-        prompt?: string;
-        is_active?: boolean;
-        has_memory?: boolean;
-        created_at?: string;
-        updated_at?: string;
+      personalities: {
+        Row: {
+          id: string;
+          user_id: string;
+          name: string;
+          prompt: string;
+          is_active: boolean;
+          has_memory: boolean;
+          created_at: string;
+          updated_at: string;
+          openai_assistant_id: string | null;
+          openai_file_id: string | null;
+          file_name: string | null;
+          file_instruction: string | null;
+          uploaded_at: string | null;
+          chunk_size: number | null;
+          top_chunks: number | null;
+          embedding_model: string | null;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          name: string;
+          prompt: string;
+          is_active?: boolean;
+          has_memory?: boolean;
+          created_at?: string;
+          updated_at?: string;
+          openai_assistant_id?: string | null;
+          openai_file_id?: string | null;
+          file_name?: string | null;
+          file_instruction?: string | null;
+          uploaded_at?: string | null;
+          chunk_size?: number | null;
+          top_chunks?: number | null;
+          embedding_model?: string | null;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          name?: string;
+          prompt?: string;
+          is_active?: boolean;
+          has_memory?: boolean;
+          created_at?: string;
+          updated_at?: string;
+          openai_assistant_id?: string | null;
+          openai_file_id?: string | null;
+          file_name?: string | null;
+          file_instruction?: string | null;
+          uploaded_at?: string | null;
+          chunk_size?: number | null;
+          top_chunks?: number | null;
+          embedding_model?: string | null;
+        };
       };
     };
   };
