@@ -1,7 +1,8 @@
 import React, { useState, useRef } from 'react';
 import { useStore } from '../store/useStore';
-import { X, Plus, Edit2, Trash2, Check, User, MessageCircle, Save, Brain, Upload, File, AlertCircle } from 'lucide-react';
+import { X, Plus, Edit2, Trash2, Check, User, MessageCircle, Save, Brain, File } from 'lucide-react';
 import { validateFile } from '../lib/fileProcessing';
+import { FileDropZone } from './FileDropZone';
 
 export const Personalities: React.FC = () => {
   const {
@@ -13,7 +14,7 @@ export const Personalities: React.FC = () => {
     deletePersonality,
     setActivePersonality,
     uploadPersonalityFile,
-    removePersonalityFile
+    deletePersonalityFile
   } = useStore();
 
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -29,19 +30,16 @@ export const Personalities: React.FC = () => {
   const [isProcessingFile, setIsProcessingFile] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
+  const handleFileSelect = (file: File) => {
     setFileError(null);
     
-    if (file) {
-      const validation = validateFile(file);
-      if (!validation.valid) {
-        setFileError(validation.error || 'Invalid file');
-        return;
-      }
-      
-      setFormData(prev => ({ ...prev, selectedFile: file }));
+    const validation = validateFile(file);
+    if (!validation.valid) {
+      setFileError(validation.error || 'Invalid file');
+      return;
     }
+    
+    setFormData(prev => ({ ...prev, selectedFile: file }));
   };
 
   const handleRemoveFile = () => {
@@ -62,12 +60,15 @@ export const Personalities: React.FC = () => {
       const newPersonality = await createPersonality(formData.name.trim(), formData.prompt.trim(), formData.has_memory);
       
       // If file was selected and personality was created successfully, upload file
-      if (newPersonality && formData.selectedFile && formData.file_instruction.trim()) {
-        await uploadPersonalityFile(
-          newPersonality.id, 
-          formData.selectedFile, 
-          formData.file_instruction.trim()
-        );
+      if (newPersonality && formData.selectedFile) {
+        await uploadPersonalityFile(newPersonality.id, formData.selectedFile);
+        
+        // Update personality with file instruction if provided
+        if (formData.file_instruction.trim()) {
+          await updatePersonality(newPersonality.id, {
+            file_instruction: formData.file_instruction.trim()
+          });
+        }
       }
       
       // Reset form
@@ -112,12 +113,8 @@ export const Personalities: React.FC = () => {
       });
       
       // Handle file upload if new file selected
-      if (formData.selectedFile && formData.file_instruction.trim()) {
-        await uploadPersonalityFile(
-          editingId, 
-          formData.selectedFile, 
-          formData.file_instruction.trim()
-        );
+      if (formData.selectedFile) {
+        await uploadPersonalityFile(editingId, formData.selectedFile);
       }
       
       // Reset form
@@ -135,12 +132,12 @@ export const Personalities: React.FC = () => {
     }
   };
 
-  const handleRemovePersonalityFile = async (personalityId: string) => {
+  const handleDeleteFile = async (personalityId: string, fileId: string) => {
     try {
       setIsProcessingFile(true);
-      await removePersonalityFile(personalityId);
+      await deletePersonalityFile(personalityId, fileId);
     } catch (error) {
-      setFileError(error instanceof Error ? error.message : 'Failed to remove file');
+      setFileError(error instanceof Error ? error.message : 'Failed to delete file');
     } finally {
       setIsProcessingFile(false);
     }
@@ -250,63 +247,27 @@ export const Personalities: React.FC = () => {
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                     Knowledge File (Optional)
                   </label>
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-2">
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        onChange={handleFileSelect}
-                        accept=".txt,.md,.pdf,.docx"
-                        className="hidden"
-                        id="file-input"
-                      />
-                      <label
-                        htmlFor="file-input"
-                        className="flex items-center gap-2 bg-gray-100 dark:bg-gray-600 hover:bg-gray-200 dark:hover:bg-gray-500 text-gray-700 dark:text-gray-200 px-3 py-2 rounded-lg cursor-pointer transition-colors"
-                      >
-                        <Upload className="w-4 h-4" />
-                        Choose File
+                  <FileDropZone
+                    onFileSelect={handleFileSelect}
+                    selectedFile={formData.selectedFile}
+                    onFileRemove={handleRemoveFile}
+                    error={fileError}
+                    disabled={isProcessingFile}
+                  />
+                  {formData.selectedFile && (
+                    <div className="mt-3">
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        File Usage Instructions
                       </label>
-                      {formData.selectedFile && (
-                        <div className="flex items-center gap-2">
-                          <File className="w-4 h-4 text-green-600" />
-                          <span className="text-sm text-gray-600 dark:text-gray-400">
-                            {formData.selectedFile.name}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={handleRemoveFile}
-                            className="text-red-500 hover:text-red-700"
-                          >
-                            <X className="w-4 h-4" />
-                          </button>
-                        </div>
-                      )}
+                      <textarea
+                        value={formData.file_instruction}
+                        onChange={(e) => setFormData(prev => ({ ...prev, file_instruction: e.target.value }))}
+                        placeholder="Describe how the AI should use this file (e.g., 'Use this as reference for answering questions about our company policies')"
+                        rows={2}
+                        className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm"
+                      />
                     </div>
-                    <p className="text-xs text-gray-500 dark:text-gray-400">
-                      Supported: TXT, MD, PDF, DOCX (max 5MB)
-                    </p>
-                    {formData.selectedFile && (
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                          File Usage Instructions
-                        </label>
-                        <textarea
-                          value={formData.file_instruction}
-                          onChange={(e) => setFormData(prev => ({ ...prev, file_instruction: e.target.value }))}
-                          placeholder="Describe how the AI should use this file (e.g., 'Use this as reference for answering questions about our company policies')"
-                          rows={2}
-                          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm"
-                        />
-                      </div>
-                    )}
-                    {fileError && (
-                      <div className="flex items-center gap-2 text-red-600 text-sm">
-                        <AlertCircle className="w-4 h-4" />
-                        {fileError}
-                      </div>
-                    )}
-                  </div>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -389,73 +350,51 @@ export const Personalities: React.FC = () => {
                         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                           Knowledge File
                         </label>
-                        {personality.file_name ? (
+                        {personality.files && personality.files.length > 0 ? (
                           <div className="space-y-3">
-                            <div className="flex items-center gap-2 p-2 bg-green-50 dark:bg-green-900/20 rounded-lg">
-                              <File className="w-4 h-4 text-green-600" />
-                              <span className="text-sm text-green-700 dark:text-green-300">
-                                {personality.file_name}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => handleRemovePersonalityFile(personality.id)}
-                                disabled={isProcessingFile}
-                                className="text-red-500 hover:text-red-700 disabled:opacity-50"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </div>
+                            {personality.files.map((file) => (
+                              <div key={file.openai_file_id} className="flex items-center gap-2 p-2 bg-green-50 dark:bg-green-900/20 rounded-lg">
+                                <File className="w-4 h-4 text-green-600" />
+                                <span className="text-sm text-green-700 dark:text-green-300 flex-1">
+                                  {file.file_name}
+                                </span>
+                                <span className="text-xs text-gray-500">
+                                  {Math.round(file.file_size / 1024)}KB
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteFile(personality.id, file.openai_file_id)}
+                                  disabled={isProcessingFile}
+                                  className="text-red-500 hover:text-red-700 disabled:opacity-50"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            ))}
                             {personality.file_instruction && (
                               <p className="text-sm text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-700 p-2 rounded">
                                 <strong>Instructions:</strong> {personality.file_instruction}
                               </p>
                             )}
                             <div className="text-sm text-gray-500">
-                              To replace this file, upload a new one below:
+                              To add another file, upload one below:
                             </div>
                           </div>
                         ) : (
                           <div className="text-sm text-gray-500 dark:text-gray-400 mb-3">
-                            No file attached
+                            No files attached
                           </div>
                         )}
                         
                         <div className="space-y-3">
-                          <div className="flex items-center gap-2">
-                            <input
-                              ref={fileInputRef}
-                              type="file"
-                              onChange={handleFileSelect}
-                              accept=".txt,.md,.pdf,.docx"
-                              className="hidden"
-                              id={`file-input-edit-${personality.id}`}
-                            />
-                            <label
-                              htmlFor={`file-input-edit-${personality.id}`}
-                              className="flex items-center gap-2 bg-gray-100 dark:bg-gray-600 hover:bg-gray-200 dark:hover:bg-gray-500 text-gray-700 dark:text-gray-200 px-3 py-2 rounded-lg cursor-pointer transition-colors"
-                            >
-                              <Upload className="w-4 h-4" />
-                              {personality.file_name ? 'Replace File' : 'Choose File'}
-                            </label>
-                            {formData.selectedFile && (
-                              <div className="flex items-center gap-2">
-                                <File className="w-4 h-4 text-blue-600" />
-                                <span className="text-sm text-gray-600 dark:text-gray-400">
-                                  {formData.selectedFile.name}
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={handleRemoveFile}
-                                  className="text-red-500 hover:text-red-700"
-                                >
-                                  <X className="w-4 h-4" />
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                          <p className="text-xs text-gray-500 dark:text-gray-400">
-                            Supported: TXT, MD, PDF, DOCX (max 5MB)
-                          </p>
+                          <FileDropZone
+                            onFileSelect={handleFileSelect}
+                            selectedFile={formData.selectedFile}
+                            onFileRemove={handleRemoveFile}
+                            error={fileError}
+                            disabled={isProcessingFile}
+                            compact={true}
+                          />
                           {formData.selectedFile && (
                             <div>
                               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
@@ -468,12 +407,6 @@ export const Personalities: React.FC = () => {
                                 rows={2}
                                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm"
                               />
-                            </div>
-                          )}
-                          {fileError && (
-                            <div className="flex items-center gap-2 text-red-600 text-sm">
-                              <AlertCircle className="w-4 h-4" />
-                              {fileError}
                             </div>
                           )}
                         </div>
@@ -514,10 +447,15 @@ export const Personalities: React.FC = () => {
                           <p className="text-gray-600 dark:text-gray-400 text-sm leading-relaxed">
                             {personality.prompt}
                           </p>
-                          {personality.file_name && (
-                            <div className="mt-2 flex items-center gap-2 text-xs text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-900/20 px-2 py-1 rounded">
-                              <File className="w-3 h-3" />
-                              <span>Knowledge: {personality.file_name}</span>
+                          {personality.files && personality.files.length > 0 && (
+                            <div className="mt-2 space-y-1">
+                              {personality.files.map((file) => (
+                                <div key={file.openai_file_id} className="flex items-center gap-2 text-xs text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-900/20 px-2 py-1 rounded">
+                                  <File className="w-3 h-3" />
+                                  <span>Knowledge: {file.file_name}</span>
+                                  <span className="text-gray-500">({Math.round(file.file_size / 1024)}KB)</span>
+                                </div>
+                              ))}
                             </div>
                           )}
                         </div>

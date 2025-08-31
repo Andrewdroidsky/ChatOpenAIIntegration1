@@ -50,6 +50,14 @@ export interface AssistantConfig {
   instructions: string;
   model: string;
   tools?: Array<{ type: 'file_search' }>;
+  tool_resources?: {
+    file_search?: {
+      vector_store_ids?: string[];
+    };
+    code_interpreter?: {
+      file_ids?: string[];
+    };
+  };
 }
 
 export interface AssistantResponse {
@@ -390,6 +398,106 @@ export class OpenAIService {
         throw new Error(`OpenAI Runs API Error: ${error.message}`);
       }
       throw error;
+    }
+  }
+
+  /**
+   * Upload file to OpenAI and add to Vector Store for assistant
+   */
+  async uploadFileToOpenAI(file: File, assistantId?: string): Promise<{ file_id: string; file_name: string; file_size: number; file_type: string; vector_store_id?: string }> {
+    if (!this.openai) {
+      throw new Error('OpenAI API key is not properly set or is invalid. Please check your API key in settings.');
+    }
+
+    try {
+      // Step 1: Upload file to OpenAI Files API
+      const uploadedFile = await this.openai.files.create({
+        file: file,
+        purpose: 'assistants'
+      });
+
+      let vectorStoreId: string | undefined;
+
+      // Step 2: If assistantId provided, create Vector Store and add file
+      if (assistantId) {
+        // Create Vector Store for this assistant
+        const vectorStore = await this.openai.vectorStores.create({
+          name: `Assistant ${assistantId} Knowledge Base`
+        });
+        vectorStoreId = vectorStore.id;
+
+        // Upload file to Vector Store with polling (handles vectorization)
+        await this.openai.vectorStores.fileBatches.uploadAndPoll(vectorStoreId, {
+          files: [file]
+        });
+
+        // Link Vector Store to Assistant
+        await this.openai.beta.assistants.update(assistantId, {
+          tools: [{ type: 'file_search' }],
+          tool_resources: {
+            file_search: {
+              vector_store_ids: [vectorStoreId]
+            }
+          }
+        });
+
+        console.log(`File ${uploadedFile.id} uploaded and vectorized in store ${vectorStoreId} for assistant ${assistantId}`);
+      }
+
+      return {
+        file_id: uploadedFile.id,
+        file_name: file.name,
+        file_size: file.size,
+        file_type: file.type,
+        vector_store_id: vectorStoreId
+      };
+    } catch (error) {
+      throw new Error(`Failed to upload file to OpenAI: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Delete file from OpenAI Files API and Vector Store
+   */
+  async deleteFileFromOpenAI(fileId: string, vectorStoreId?: string): Promise<void> {
+    if (!this.openai) {
+      throw new Error('OpenAI API key is not properly set or is invalid. Please check your API key in settings.');
+    }
+
+    try {
+      // Remove from Vector Store first if provided
+      if (vectorStoreId) {
+        try {
+          await this.openai.vectorStores.files.del(vectorStoreId, fileId);
+          console.log(`File ${fileId} removed from vector store ${vectorStoreId}`);
+        } catch (error) {
+          console.warn(`Failed to remove file from vector store: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      }
+
+      // Delete the actual file
+      await this.openai.files.delete(fileId);
+      console.log(`File ${fileId} deleted from OpenAI`);
+    } catch (error) {
+      throw new Error(`Failed to delete file from OpenAI: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * List all files from OpenAI Files API
+   */
+  async listFiles(): Promise<any[]> {
+    if (!this.openai) {
+      throw new Error('OpenAI API key is not properly set or is invalid. Please check your API key in settings.');
+    }
+
+    try {
+      const filesList = await this.openai.files.list({
+        purpose: 'assistants'
+      });
+      return filesList.data;
+    } catch (error) {
+      throw new Error(`Failed to list files from OpenAI: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 

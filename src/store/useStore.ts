@@ -1,9 +1,11 @@
 import { create } from 'zustand';
 import { User } from '@supabase/supabase-js';
-import { supabase, Database } from '../lib/supabase';
+import { supabase, Database, PersonalityFile } from '../lib/supabase';
 import { OpenAIService, TokenUsage } from '../lib/openai';
+import { AssistantService } from '../lib/assistantService';
+import { VectorStoreService } from '../lib/vectorStoreService';
+import { IntegrationService } from '../lib/integrationService';
 import { encryption } from '../lib/encryption';
-import { RAGService } from '../lib/ragService';
 
 type Chat = Database['public']['Tables']['chats']['Row'] & {
   token_usage?: TokenUsage;
@@ -35,10 +37,14 @@ interface AppState {
   sidebarOpen: boolean;
   showSettings: boolean;
   showPersonalities: boolean;
+  uploading: boolean;
+  error: string | null;
   
-  // OpenAI & RAG
+  // Services
   openaiService: OpenAIService;
-  ragService: RAGService;
+  assistantService: AssistantService;
+  vectorStoreService: VectorStoreService;
+  integrationService: IntegrationService;
   
   // Actions
   setUser: (user: User | null) => void;
@@ -58,8 +64,8 @@ interface AppState {
   updatePersonality: (id: string, updates: Partial<Personality>) => Promise<void>;
   deletePersonality: (id: string) => Promise<void>;
   setActivePersonality: (id: string) => Promise<void>;
-  uploadPersonalityFile: (personalityId: string, file: File, instruction: string) => Promise<void>;
-  removePersonalityFile: (personalityId: string) => Promise<void>;
+  uploadPersonalityFile: (personalityId: string, file: File) => Promise<PersonalityFile>;
+  deletePersonalityFile: (personalityId: string, fileId: string) => Promise<void>;
   setIsGenerating: (generating: boolean) => void;
 }
 
@@ -78,8 +84,12 @@ export const useStore = create<AppState>((set, get) => ({
   sidebarOpen: true,
   showSettings: false,
   showPersonalities: false,
+  uploading: false,
+  error: null,
   openaiService: new OpenAIService(),
-  ragService: new RAGService(),
+  assistantService: new AssistantService(),
+  vectorStoreService: new VectorStoreService(),
+  integrationService: new IntegrationService(),
 
   // Actions
   setUser: (user) => {
@@ -421,7 +431,9 @@ export const useStore = create<AppState>((set, get) => ({
       set({ settings: data });
       if (data.openai_api_key) {
         get().openaiService.setApiKey(data.openai_api_key);
-        get().ragService.setApiKey(data.openai_api_key);
+        get().assistantService.setApiKey(data.openai_api_key);
+        get().vectorStoreService.setApiKey(data.openai_api_key);
+        get().integrationService.setApiKey(data.openai_api_key);
       }
     }
   },
@@ -447,7 +459,9 @@ export const useStore = create<AppState>((set, get) => ({
       
       if (newSettings.openai_api_key) {
         get().openaiService.setApiKey(newSettings.openai_api_key);
-        get().ragService.setApiKey(newSettings.openai_api_key);
+        get().assistantService.setApiKey(newSettings.openai_api_key);
+        get().vectorStoreService.setApiKey(newSettings.openai_api_key);
+        get().integrationService.setApiKey(newSettings.openai_api_key);
       }
     }
   },
@@ -474,7 +488,7 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   createPersonality: async (name, prompt, hasMemory = true) => {
-    const { user, settings, openaiService } = get();
+    const { user, settings, assistantService } = get();
     if (!user) return null;
 
     try {
@@ -483,11 +497,11 @@ export const useStore = create<AppState>((set, get) => ({
       // Create OpenAI Assistant if API key is available
       if (settings?.openai_api_key) {
         try {
-          openaiService.setApiKey(settings.openai_api_key.trim());
-          const assistant = await openaiService.createAssistant({
+          assistantService.setApiKey(settings.openai_api_key.trim());
+          const assistant = await assistantService.createAssistant({
             name,
             instructions: prompt,
-            model: settings.model || 'gpt-4',
+            model: settings.model || 'gpt-4o',
             tools: [] // Don't add file_search tool initially
           });
           assistantId = assistant.id;
@@ -597,6 +611,117 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
+  uploadPersonalityFile: async (personalityId: string, file: File) => {
+    const { settings, integrationService } = get();
+    
+    if (!settings?.openai_api_key) {
+      throw new Error('OpenAI API key is required for file upload');
+    }
+
+    try {
+      set(() => ({ uploading: true, error: null }));
+      
+      // Get current personality
+      const personality = get().personalities.find(p => p.id === personalityId);
+      if (!personality || !personality.openai_assistant_id) {
+        throw new Error('Personality not found or no OpenAI Assistant associated');
+      }
+
+      // Set API key and use integration service to upload files
+      integrationService.setApiKey(settings.openai_api_key.trim());
+      
+      // Get existing vector_store_id from database if available
+      // For now, we'll create a new vector store per upload - this can be optimized later
+      const result = await integrationService.addFilesToPersonality(
+        personality.openai_assistant_id,
+        personality.name,
+        [file]
+      );
+      
+      // Create PersonalityFile objects from uploaded files
+      const personalityFiles = result.uploaded_files.map(uploadResult => ({
+        openai_file_id: uploadResult.file_id,
+        file_name: uploadResult.file_name,
+        file_size: uploadResult.file_size,
+        file_type: uploadResult.file_type,
+        status: 'ready' as const,
+        uploaded_at: new Date().toISOString(),
+      }));
+
+      // Update files array in database
+      const updatedFiles = [...(personality.files || []), ...personalityFiles];
+      const { error } = await supabase
+        .from('personalities')
+        .update({ files: updatedFiles })
+        .eq('id', personalityId);
+
+      if (error) throw error;
+
+      // Update local state
+      set(state => ({
+        personalities: state.personalities.map(p =>
+          p.id === personalityId ? { ...p, files: updatedFiles } : p
+        ),
+        activePersonality: state.activePersonality?.id === personalityId 
+          ? { ...state.activePersonality, files: updatedFiles }
+          : state.activePersonality,
+        uploading: false
+      }));
+
+      // IntegrationService already handled the Assistant update
+      // Return the first uploaded file (maintaining backward compatibility)
+      return personalityFiles[0];
+    } catch (error) {
+      set(() => ({ uploading: false, error: error instanceof Error ? error.message : 'Upload failed' }));
+      throw error;
+    }
+  },
+
+  deletePersonalityFile: async (personalityId: string, fileId: string) => {
+    const { settings, integrationService } = get();
+    
+    try {
+      const personality = get().personalities.find(p => p.id === personalityId);
+      if (!personality) {
+        throw new Error('Personality not found');
+      }
+
+      // Remove file from files array
+      const updatedFiles = personality.files?.filter(f => f.openai_file_id !== fileId) || [];
+      
+      // Update database
+      const { error } = await supabase
+        .from('personalities')
+        .update({ files: updatedFiles })
+        .eq('id', personalityId);
+
+      if (error) throw error;
+
+      // Delete from OpenAI using integration service
+      // Note: We don't have vector_store_id in current structure
+      // This is a known limitation - files are removed from DB but may remain in OpenAI
+      if (settings?.openai_api_key) {
+        console.warn('File deletion from OpenAI vector stores not implemented in current version');
+        // TODO: Store vector_store_id in personality or file metadata for proper cleanup
+      }
+
+      // Update local state
+      set(state => ({
+        personalities: state.personalities.map(p =>
+          p.id === personalityId ? { ...p, files: updatedFiles } : p
+        ),
+        activePersonality: state.activePersonality?.id === personalityId 
+          ? { ...state.activePersonality, files: updatedFiles }
+          : state.activePersonality
+      }));
+
+      // Note: Vector Store management is handled separately by VectorStoreService
+      // File removal from vector stores should be implemented when vector_store_id is tracked
+    } catch (error) {
+      throw error;
+    }
+  },
+
   setActivePersonality: async (id) => {
     const { user } = get();
     if (!user) return;
@@ -624,88 +749,6 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  uploadPersonalityFile: async (personalityId, file, instruction) => {
-    try {
-      const { settings, openaiService } = get();
-      if (!settings?.openai_api_key) {
-        throw new Error('OpenAI API key is required');
-      }
-
-      // Get personality
-      const personality = get().personalities.find(p => p.id === personalityId);
-      if (!personality) {
-        throw new Error('Personality not found');
-      }
-
-      if (!personality.openai_assistant_id) {
-        throw new Error('Personality must have an Assistant ID to upload files');
-      }
-
-      openaiService.setApiKey(settings.openai_api_key.trim());
-
-      // Upload file to OpenAI
-      const fileId = await openaiService.uploadFile(file);
-
-      // Update the assistant with the new file and instructions
-      await openaiService.updateAssistant(personality.openai_assistant_id, {
-        name: personality.name,
-        instructions: `${personality.prompt}\n\nFile Instructions: ${instruction}`,
-        model: settings.model || 'gpt-4',
-        tools: [{ type: 'file_search' }]
-      });
-
-      // Update personality with file info
-      const updates = {
-        file_name: file.name,
-        file_instruction: instruction,
-        openai_file_id: fileId,
-        uploaded_at: new Date().toISOString()
-      };
-
-      await get().updatePersonality(personalityId, updates);
-
-    } catch (error) {
-      throw new Error(`Failed to upload file: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  },
-
-  removePersonalityFile: async (personalityId) => {
-    try {
-      const { settings, openaiService } = get();
-      if (!settings?.openai_api_key) {
-        throw new Error('OpenAI API key is required');
-      }
-
-      // Get personality
-      const personality = get().personalities.find(p => p.id === personalityId);
-      if (!personality || !personality.openai_assistant_id) {
-        throw new Error('Personality or Assistant not found');
-      }
-
-      openaiService.setApiKey(settings.openai_api_key.trim());
-
-      // Update the assistant to remove file instructions
-      await openaiService.updateAssistant(personality.openai_assistant_id, {
-        name: personality.name,
-        instructions: personality.prompt, // Remove file instructions
-        model: settings.model || 'gpt-4',
-        tools: [] // Remove file_search tool when no file
-      });
-
-      // Update personality to remove file info
-      const updates = {
-        file_name: null,
-        file_instruction: null,
-        openai_file_id: null,
-        uploaded_at: null
-      };
-
-      await get().updatePersonality(personalityId, updates);
-
-    } catch (error) {
-      throw new Error(`Failed to remove file: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  },
 
   setIsGenerating: (generating) => set({ isGenerating: generating })
 }));

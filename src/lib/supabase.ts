@@ -16,6 +16,16 @@ try {
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
+export interface PersonalityFile {
+  openai_file_id: string;
+  file_name: string;
+  file_size: number;
+  file_type: string;
+  status: 'uploading' | 'processing' | 'ready' | 'error';
+  uploaded_at: string;
+  error_message?: string;
+}
+
 export type Database = {
   public: {
     Tables: {
@@ -114,13 +124,8 @@ export type Database = {
           created_at: string;
           updated_at: string;
           openai_assistant_id: string | null;
-          openai_file_id: string | null;
-          file_name: string | null;
+          files: PersonalityFile[];
           file_instruction: string | null;
-          uploaded_at: string | null;
-          chunk_size: number | null;
-          top_chunks: number | null;
-          embedding_model: string | null;
         };
         Insert: {
           id?: string;
@@ -132,13 +137,8 @@ export type Database = {
           created_at?: string;
           updated_at?: string;
           openai_assistant_id?: string | null;
-          openai_file_id?: string | null;
-          file_name?: string | null;
+          files?: PersonalityFile[];
           file_instruction?: string | null;
-          uploaded_at?: string | null;
-          chunk_size?: number | null;
-          top_chunks?: number | null;
-          embedding_model?: string | null;
         };
         Update: {
           id?: string;
@@ -150,13 +150,8 @@ export type Database = {
           created_at?: string;
           updated_at?: string;
           openai_assistant_id?: string | null;
-          openai_file_id?: string | null;
-          file_name?: string | null;
+          files?: PersonalityFile[];
           file_instruction?: string | null;
-          uploaded_at?: string | null;
-          chunk_size?: number | null;
-          top_chunks?: number | null;
-          embedding_model?: string | null;
         };
       };
     };
