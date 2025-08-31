@@ -3,6 +3,7 @@ import { User } from '@supabase/supabase-js';
 import { supabase, Database } from '../lib/supabase';
 import { OpenAIService, TokenUsage } from '../lib/openai';
 import { encryption } from '../lib/encryption';
+import { RAGService } from '../lib/ragService';
 
 type Chat = Database['public']['Tables']['chats']['Row'] & {
   token_usage?: TokenUsage;
@@ -35,8 +36,9 @@ interface AppState {
   showSettings: boolean;
   showPersonalities: boolean;
   
-  // OpenAI
+  // OpenAI & RAG
   openaiService: OpenAIService;
+  ragService: RAGService;
   
   // Actions
   setUser: (user: User | null) => void;
@@ -52,10 +54,12 @@ interface AppState {
   toggleSettings: () => void;
   togglePersonalities: () => void;
   loadPersonalities: () => Promise<void>;
-  createPersonality: (name: string, prompt: string, hasMemory?: boolean) => Promise<void>;
+  createPersonality: (name: string, prompt: string, hasMemory?: boolean) => Promise<Personality | null>;
   updatePersonality: (id: string, updates: Partial<Personality>) => Promise<void>;
   deletePersonality: (id: string) => Promise<void>;
   setActivePersonality: (id: string) => Promise<void>;
+  uploadPersonalityFile: (personalityId: string, file: File, instruction: string) => Promise<void>;
+  removePersonalityFile: (personalityId: string) => Promise<void>;
   setIsGenerating: (generating: boolean) => void;
 }
 
@@ -75,6 +79,7 @@ export const useStore = create<AppState>((set, get) => ({
   showSettings: false,
   showPersonalities: false,
   openaiService: new OpenAIService(),
+  ragService: new RAGService(),
 
   // Actions
   setUser: (user) => {
@@ -168,8 +173,24 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   sendMessage: async (content) => {
+    // Prevent double execution
+    if (get().isGenerating) {
+      console.log('Message already in progress, skipping...');
+      return;
+    }
+    
     const { user, currentChatId, settings, openaiService } = get();
-    if (!user || !settings?.openai_api_key) return;
+    if (!user || !settings?.openai_api_key) {
+      console.error('Missing user or API key');
+      return;
+    }
+
+    // Check if we have active personality with assistant
+    const { activePersonality } = get();
+    if (!activePersonality?.openai_assistant_id) {
+      console.error('No active personality with Assistant ID found');
+      return;
+    }
 
     let chatId = currentChatId;
     
@@ -179,59 +200,55 @@ export const useStore = create<AppState>((set, get) => ({
       set({ currentChatId: chatId });
     }
 
-    // Add user message
-    const userMessage: Message = {
-      id: crypto.randomUUID(),
-      chat_id: chatId,
-      role: 'user',
-      content,
-      created_at: new Date().toISOString()
-    };
+    // Get current chat to check for thread ID
+    const { data: chatData } = await supabase
+      .from('chats')
+      .select('openai_thread_id')
+      .eq('id', chatId)
+      .single();
 
-    set(state => ({ messages: [...state.messages, userMessage] }));
+    let threadId = chatData?.openai_thread_id;
 
-    // Save user message to DB
-    await supabase.from('messages').insert({
-      chat_id: chatId,
-      role: 'user',
-      content
-    });
-
-    // Generate AI response
     set({ isGenerating: true });
-
-    let assistantMessage: Message;
 
     try {
       openaiService.setApiKey(settings.openai_api_key.trim());
-      
-      const messages = get().messages.map(msg => ({
-        role: msg.role as 'user' | 'assistant',
-        content: msg.content
-      }));
-      
-      // Add personality prompt as system message if active personality exists
-      const { activePersonality } = get();
-      
-      let messagesWithPersonality;
-      if (activePersonality) {
-        if (activePersonality.has_memory) {
-          // Include all previous messages with personality prompt
-          messagesWithPersonality = [{ role: 'system' as const, content: activePersonality.prompt }, ...messages];
-        } else {
-          // Only include current user message with personality prompt
-          const currentUserMessage = messages[messages.length - 1];
-          messagesWithPersonality = [
-            { role: 'system' as const, content: activePersonality.prompt },
-            currentUserMessage
-          ];
-        }
-      } else {
-        messagesWithPersonality = messages;
+
+      // Create thread if it doesn't exist
+      if (!threadId) {
+        const thread = await openaiService.createThread();
+        threadId = thread.id;
+        
+        // Update chat with thread ID
+        await supabase
+          .from('chats')
+          .update({ openai_thread_id: threadId })
+          .eq('id', chatId);
       }
 
-      let assistantContent = '';
-      assistantMessage = {
+      // Add user message to UI
+      const userMessage: Message = {
+        id: crypto.randomUUID(),
+        chat_id: chatId,
+        role: 'user',
+        content,
+        created_at: new Date().toISOString()
+      };
+
+      set(state => ({ messages: [...state.messages, userMessage] }));
+
+      // Save user message to DB
+      await supabase.from('messages').insert({
+        chat_id: chatId,
+        role: 'user',
+        content
+      });
+
+      // Add message to OpenAI thread
+      await openaiService.addMessage(threadId, content);
+
+      // Create assistant message placeholder
+      const assistantMessage: Message = {
         id: crypto.randomUUID(),
         chat_id: chatId,
         role: 'assistant',
@@ -241,54 +258,124 @@ export const useStore = create<AppState>((set, get) => ({
 
       set(state => ({ messages: [...state.messages, assistantMessage] }));
 
-      for await (const chunk of openaiService.streamChat(messagesWithPersonality, {
-        model: settings.model,
-        temperature: settings.temperature,
-        max_tokens: settings.max_tokens
-      })) {
-        if (chunk.content) {
-          assistantContent += chunk.content;
-        }
-        set(state => ({
-          messages: state.messages.map(msg =>
-            msg.id === assistantMessage.id
-              ? { ...msg, content: assistantContent }
-              : msg
-          )
-        }));
+      // Run the assistant
+      const run = await openaiService.runAssistant(threadId, activePersonality.openai_assistant_id);
+
+      // Poll for completion (simple polling - in production you might want to use webhooks)
+      let runStatus = run.status;
+        let attempts = 0;
+      const maxAttempts = 30; // 30 seconds timeout
+      let lastRunCheck: any = { status: run.status, usage: null, run: run };
+      let lastLoggedStatus = run.status;
+      
+      console.log('Run status:', lastLoggedStatus);
+      
+      while ((runStatus === 'queued' || runStatus === 'in_progress') && attempts < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+        lastRunCheck = await openaiService.checkRun(threadId, run.id);
+        runStatus = lastRunCheck.status;
+        attempts++;
         
-        // Update token usage if provided
-        if (chunk.usage) {
+        // Log only status changes
+        if (runStatus !== lastLoggedStatus) {
+          console.log('Run status:', runStatus);
+          lastLoggedStatus = runStatus;
+        }
+        
+        // Check for requires_action or errors
+        if (lastRunCheck.run?.status === 'requires_action') {
+          console.warn('Requires action:', JSON.stringify(lastRunCheck.run.required_action, null, 2));
+          break;
+        }
+        if (lastRunCheck.run?.last_error) {
+          console.error('Run error:', lastRunCheck.run.last_error);
+          break;
+        }
+      }
+      
+      if (attempts >= maxAttempts) {
+        console.error('Run timeout after 30 seconds');
+        throw new Error('Assistant run timeout');
+      }
+
+      if (runStatus === 'completed') {
+        // Use token usage from the last run check (we already have it from polling)
+        const tokenUsage = lastRunCheck?.usage;
+        
+        if (tokenUsage) {
+          console.log('Tokens:', tokenUsage.total_tokens, '(prompt:', tokenUsage.prompt_tokens, 'completion:', tokenUsage.completion_tokens + ')');
+          // Update total tokens in state
+          set(state => ({ totalTokens: state.totalTokens + tokenUsage.total_tokens }));
+        }
+
+        // Get the latest messages from the thread
+        const threadMessages = await openaiService.getThreadMessages(threadId);
+        const latestAssistantMessage = threadMessages
+          .filter(msg => msg.role === 'assistant')
+          .pop();
+        
+        console.log('Got assistant message:', latestAssistantMessage ? 'YES' : 'NO');
+        
+        if (latestAssistantMessage) {
+          console.log('Updating message with content length:', latestAssistantMessage.content.length);
+          
+          // Update the assistant message in UI
           set(state => ({
-            totalTokens: state.totalTokens + chunk.usage!.total_tokens,
             messages: state.messages.map(msg =>
               msg.id === assistantMessage.id
-                ? { ...msg, token_usage: chunk.usage }
+                ? { ...msg, content: latestAssistantMessage.content, token_usage: tokenUsage }
                 : msg
             )
           }));
+
+          console.log('UI updated, saving to DB...');
+
+          // Save assistant message to DB
+          const { error: saveError } = await supabase.from('messages').insert({
+            chat_id: chatId,
+            role: 'assistant',
+            content: latestAssistantMessage.content
+          });
+
+          if (saveError) {
+            console.error('Error saving to DB:', saveError);
+          } else {
+            console.log('Message saved to DB successfully');
+          }
+
+          // Update chat title if it's the first message
+          const currentMessages = get().messages;
+          if (currentMessages.length === 2) {
+            const title = content.slice(0, 50) + (content.length > 50 ? '...' : '');
+            await get().updateChatTitle(chatId, title);
+          }
+
+          // Update chat with token usage if available
+          if (tokenUsage) {
+            set(state => ({
+              chats: state.chats.map(chat =>
+                chat.id === chatId
+                  ? { ...chat, token_usage: tokenUsage }
+                  : chat
+              )
+            }));
+          }
         }
-      }
-
-      // Save assistant message to DB
-      await supabase.from('messages').insert({
-        chat_id: chatId,
-        role: 'assistant',
-        content: assistantContent
-      });
-
-      // Update chat title if it's the first message
-      const currentMessages = get().messages;
-      if (currentMessages.length === 2) {
-        const title = content.slice(0, 50) + (content.length > 50 ? '...' : '');
-        await get().updateChatTitle(chatId, title);
+      } else {
+        console.error('Assistant run failed with status:', runStatus);
+        // Remove the empty assistant message on error
+        set(state => ({
+          messages: state.messages.filter(msg => msg.id !== assistantMessage?.id)
+        }));
       }
 
     } catch (error) {
-      console.error('Error generating response:', error);
-      // Remove the empty assistant message on error
+      console.error('Error with Assistants API:', error);
+      // Remove the empty assistant message on error if it exists
       set(state => ({
-        messages: state.messages.filter(msg => msg.id !== assistantMessage?.id)
+        messages: state.messages.filter(msg => 
+          msg.role === 'assistant' && msg.content === '' ? false : true
+        )
       }));
     } finally {
       set({ isGenerating: false });
@@ -334,6 +421,7 @@ export const useStore = create<AppState>((set, get) => ({
       set({ settings: data });
       if (data.openai_api_key) {
         get().openaiService.setApiKey(data.openai_api_key);
+        get().ragService.setApiKey(data.openai_api_key);
       }
     }
   },
@@ -359,6 +447,7 @@ export const useStore = create<AppState>((set, get) => ({
       
       if (newSettings.openai_api_key) {
         get().openaiService.setApiKey(newSettings.openai_api_key);
+        get().ragService.setApiKey(newSettings.openai_api_key);
       }
     }
   },
@@ -385,55 +474,126 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   createPersonality: async (name, prompt, hasMemory = true) => {
-    const { user } = get();
-    if (!user) return;
+    const { user, settings, openaiService } = get();
+    if (!user) return null;
 
-    const { data, error } = await supabase
-      .from('personalities')
-      .insert({
-        user_id: user.id,
-        name,
-        prompt,
-        is_active: false,
-        has_memory: hasMemory
-      })
-      .select()
-      .single();
+    try {
+      let assistantId: string | null = null;
 
-    if (!error && data) {
-      set(state => ({ personalities: [data, ...state.personalities] }));
+      // Create OpenAI Assistant if API key is available
+      if (settings?.openai_api_key) {
+        try {
+          openaiService.setApiKey(settings.openai_api_key.trim());
+          const assistant = await openaiService.createAssistant({
+            name,
+            instructions: prompt,
+            model: settings.model || 'gpt-4',
+            tools: [] // Don't add file_search tool initially
+          });
+          assistantId = assistant.id;
+        } catch (error) {
+          console.warn('Failed to create OpenAI Assistant:', error);
+          // Continue with personality creation even if Assistant creation fails
+        }
+      }
+
+      const { data, error } = await supabase
+        .from('personalities')
+        .insert({
+          user_id: user.id,
+          name,
+          prompt,
+          is_active: false,
+          has_memory: hasMemory,
+          openai_assistant_id: assistantId
+        })
+        .select()
+        .single();
+
+      if (!error && data) {
+        set(state => ({ personalities: [data, ...state.personalities] }));
+        return data;
+      }
+      return null;
+    } catch (error) {
+      console.error('Error creating personality:', error);
+      return null;
     }
   },
 
   updatePersonality: async (id, updates) => {
+    const { settings, openaiService } = get();
+    
+    // Update in local database first
     const { error } = await supabase
       .from('personalities')
       .update(updates)
       .eq('id', id);
+      
+    if (error) {
+      throw new Error(`Failed to update personality: ${error.message}`);
+    }
 
-    if (!error) {
-      set(state => ({
-        personalities: state.personalities.map(p =>
-          p.id === id ? { ...p, ...updates } : p
-        ),
-        activePersonality: state.activePersonality?.id === id 
-          ? { ...state.activePersonality, ...updates }
-          : state.activePersonality
-      }));
+    // Update local state
+    set(state => ({
+      personalities: state.personalities.map(p =>
+        p.id === id ? { ...p, ...updates } : p
+      ),
+      activePersonality: state.activePersonality?.id === id 
+        ? { ...state.activePersonality, ...updates }
+        : state.activePersonality
+    }));
+
+    // Sync with OpenAI if assistant exists and API key is available
+    const personality = get().personalities.find(p => p.id === id);
+    if (personality?.openai_assistant_id && settings?.openai_api_key) {
+      try {
+        openaiService.setApiKey(settings.openai_api_key.trim());
+        await openaiService.updateAssistant(personality.openai_assistant_id, {
+          name: updates.name || personality.name,
+          instructions: updates.prompt || personality.prompt
+        });
+        console.log('Assistant synced with OpenAI successfully');
+      } catch (syncError) {
+        console.error('Failed to sync with OpenAI:', syncError);
+        // Don't throw error here - local update was successful
+      }
     }
   },
 
   deletePersonality: async (id) => {
-    const { error } = await supabase
-      .from('personalities')
-      .delete()
-      .eq('id', id);
+    try {
+      const { settings, openaiService } = get();
+      
+      // Get personality to check for assistant ID
+      const personality = get().personalities.find(p => p.id === id);
+      
+      // Delete Assistant from OpenAI if it exists
+      if (personality?.openai_assistant_id && settings?.openai_api_key) {
+        try {
+          openaiService.setApiKey(settings.openai_api_key.trim());
+          await openaiService.deleteAssistant(personality.openai_assistant_id);
+        } catch (error) {
+          console.warn('Failed to delete OpenAI Assistant:', error);
+          // Continue with database deletion even if Assistant deletion fails
+        }
+      }
 
-    if (!error) {
-      set(state => ({
-        personalities: state.personalities.filter(p => p.id !== id),
-        activePersonality: state.activePersonality?.id === id ? null : state.activePersonality
-      }));
+      // Delete from database
+      const { error } = await supabase
+        .from('personalities')
+        .delete()
+        .eq('id', id);
+
+      if (!error) {
+        set(state => ({
+          personalities: state.personalities.filter(p => p.id !== id),
+          activePersonality: state.activePersonality?.id === id ? null : state.activePersonality
+        }));
+      }
+    } catch (error) {
+      console.error('Error deleting personality:', error);
+      throw error;
     }
   },
 
@@ -461,6 +621,89 @@ export const useStore = create<AppState>((set, get) => ({
         })),
         activePersonality: state.personalities.find(p => p.id === id) || null
       }));
+    }
+  },
+
+  uploadPersonalityFile: async (personalityId, file, instruction) => {
+    try {
+      const { settings, openaiService } = get();
+      if (!settings?.openai_api_key) {
+        throw new Error('OpenAI API key is required');
+      }
+
+      // Get personality
+      const personality = get().personalities.find(p => p.id === personalityId);
+      if (!personality) {
+        throw new Error('Personality not found');
+      }
+
+      if (!personality.openai_assistant_id) {
+        throw new Error('Personality must have an Assistant ID to upload files');
+      }
+
+      openaiService.setApiKey(settings.openai_api_key.trim());
+
+      // Upload file to OpenAI
+      const fileId = await openaiService.uploadFile(file);
+
+      // Update the assistant with the new file and instructions
+      await openaiService.updateAssistant(personality.openai_assistant_id, {
+        name: personality.name,
+        instructions: `${personality.prompt}\n\nFile Instructions: ${instruction}`,
+        model: settings.model || 'gpt-4',
+        tools: [{ type: 'file_search' }]
+      });
+
+      // Update personality with file info
+      const updates = {
+        file_name: file.name,
+        file_instruction: instruction,
+        openai_file_id: fileId,
+        uploaded_at: new Date().toISOString()
+      };
+
+      await get().updatePersonality(personalityId, updates);
+
+    } catch (error) {
+      throw new Error(`Failed to upload file: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  },
+
+  removePersonalityFile: async (personalityId) => {
+    try {
+      const { settings, openaiService } = get();
+      if (!settings?.openai_api_key) {
+        throw new Error('OpenAI API key is required');
+      }
+
+      // Get personality
+      const personality = get().personalities.find(p => p.id === personalityId);
+      if (!personality || !personality.openai_assistant_id) {
+        throw new Error('Personality or Assistant not found');
+      }
+
+      openaiService.setApiKey(settings.openai_api_key.trim());
+
+      // Update the assistant to remove file instructions
+      await openaiService.updateAssistant(personality.openai_assistant_id, {
+        name: personality.name,
+        instructions: personality.prompt, // Remove file instructions
+        model: settings.model || 'gpt-4',
+        tools: [] // Remove file_search tool when no file
+      });
+
+      // Update personality to remove file info
+      const updates = {
+        file_name: null,
+        file_instruction: null,
+        openai_file_id: null,
+        uploaded_at: null
+      };
+
+      await get().updatePersonality(personalityId, updates);
+
+    } catch (error) {
+      throw new Error(`Failed to remove file: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   },
 
