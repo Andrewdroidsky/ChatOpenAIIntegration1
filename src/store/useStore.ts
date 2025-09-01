@@ -51,7 +51,7 @@ interface AppState {
   toggleSettings: () => void;
   togglePersonalities: () => void;
   loadPersonalities: () => Promise<void>;
-  createPersonality: (name: string, prompt: string, hasMemory?: boolean) => Promise<void>;
+  createPersonality: (name: string, prompt: string) => Promise<void>;
   updatePersonality: (id: string, updates: Partial<Personality>) => Promise<void>;
   deletePersonality: (id: string) => Promise<void>;
   setActivePersonality: (id: string) => Promise<void>;
@@ -372,7 +372,7 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  createPersonality: async (name, prompt, hasMemory = true) => {
+  createPersonality: async (name, prompt) => {
     const { user } = get();
     if (!user) return;
 
@@ -382,8 +382,7 @@ export const useStore = create<AppState>((set, get) => ({
         user_id: user.id,
         name,
         prompt,
-        is_active: false,
-        has_memory: hasMemory
+        is_active: false
       })
       .select()
       .single();

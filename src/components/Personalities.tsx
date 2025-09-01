@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useStore } from '../store/useStore';
-import { X, Plus, Edit2, Trash2, Check, User, MessageCircle, Save, Brain } from 'lucide-react';
+import { X, Plus, Edit2, Trash2, Check, User, MessageCircle, Save } from 'lucide-react';
 
 export const Personalities: React.FC = () => {
   const {
@@ -17,15 +17,14 @@ export const Personalities: React.FC = () => {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
-    prompt: '',
-    has_memory: true
+    prompt: ''
   });
 
   const handleCreate = async () => {
     if (!formData.name.trim() || !formData.prompt.trim()) return;
     
-    await createPersonality(formData.name.trim(), formData.prompt.trim(), formData.has_memory);
-    setFormData({ name: '', prompt: '', has_memory: true });
+    await createPersonality(formData.name.trim(), formData.prompt.trim());
+    setFormData({ name: '', prompt: '' });
     setShowCreateForm(false);
   };
 
@@ -33,8 +32,7 @@ export const Personalities: React.FC = () => {
     setEditingId(personality.id);
     setFormData({
       name: personality.name,
-      prompt: personality.prompt,
-      has_memory: personality.has_memory
+      prompt: personality.prompt
     });
   };
 
@@ -43,17 +41,16 @@ export const Personalities: React.FC = () => {
     
     await updatePersonality(editingId, {
       name: formData.name.trim(),
-      prompt: formData.prompt.trim(),
-      has_memory: formData.has_memory
+      prompt: formData.prompt.trim()
     });
     
     setEditingId(null);
-    setFormData({ name: '', prompt: '', has_memory: true });
+    setFormData({ name: '', prompt: '' });
   };
 
   const handleCancelEdit = () => {
     setEditingId(null);
-    setFormData({ name: '', prompt: '', has_memory: true });
+    setFormData({ name: '', prompt: '' });
   };
 
   const handleDelete = async (id: string) => {
@@ -130,51 +127,6 @@ export const Personalities: React.FC = () => {
                     className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
                   />
                 </div>
-                <div>
-                  <label className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
-                    <input
-                      type="checkbox"
-                      checked={formData.has_memory}
-                      onChange={(e) => setFormData(prev => ({ ...prev, has_memory: e.target.checked }))}
-                      className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 dark:focus:ring-blue-600 dark:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600"
-                    />
-                    <Brain className="w-4 h-4" />
-                    Enable Memory
-                  </label>
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 ml-6">
-                    When enabled, the AI will remember previous messages in the conversation
-                  </p>
-                </div>
-                <div>
-                  <label className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
-                    <input
-                      type="checkbox"
-                      checked={formData.has_memory}
-                      onChange={(e) => setFormData(prev => ({ ...prev, has_memory: e.target.checked }))}
-                      className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 dark:focus:ring-blue-600 dark:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600"
-                    />
-                    <Brain className="w-4 h-4" />
-                    Enable Memory
-                  </label>
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 ml-6">
-                    When enabled, the AI will remember previous messages in the conversation
-                  </p>
-                </div>
-                <div>
-                  <label className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
-                    <input
-                      type="checkbox"
-                      checked={formData.has_memory}
-                      onChange={(e) => setFormData(prev => ({ ...prev, has_memory: e.target.checked }))}
-                      className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 dark:focus:ring-blue-600 dark:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600"
-                    />
-                    <Brain className="w-4 h-4" />
-                    Enable Memory
-                  </label>
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 ml-6">
-                    When enabled, the AI will remember previous messages in the conversation
-                  </p>
-                </div>
                 <div className="flex items-center gap-2">
                   <button
                     onClick={handleCreate}
@@ -187,7 +139,7 @@ export const Personalities: React.FC = () => {
                   <button
                     onClick={() => {
                       setShowCreateForm(false);
-                      setFormData({ name: '', prompt: '', has_memory: true });
+                      setFormData({ name: '', prompt: '' });
                     }}
                     className="flex items-center gap-2 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-600 px-4 py-2 rounded-lg transition-colors"
                   >
@@ -298,16 +250,6 @@ export const Personalities: React.FC = () => {
                       </div>
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-4">
-                          <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-                            <input
-                              type="checkbox"
-                              checked={personality.has_memory}
-                              onChange={(e) => updatePersonality(personality.id, { has_memory: e.target.checked })}
-                              className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 dark:focus:ring-blue-600 dark:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600"
-                            />
-                            <Brain className="w-4 h-4" />
-                            Enable Memory
-                          </label>
                           <span className="text-xs text-gray-500 dark:text-gray-400">
                             Updated {new Date(personality.updated_at).toLocaleDateString()}
                           </span>
