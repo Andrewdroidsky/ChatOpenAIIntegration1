@@ -60,7 +60,7 @@ interface AppState {
   toggleSettings: () => void;
   togglePersonalities: () => void;
   loadPersonalities: () => Promise<void>;
-  createPersonality: (name: string, prompt: string, hasMemory?: boolean) => Promise<Personality | null>;
+  createPersonality: (name: string, prompt: string, hasMemory?: boolean, file?: File, fileInstruction?: string) => Promise<Personality | null>;
   updatePersonality: (id: string, updates: Partial<Personality>) => Promise<void>;
   deletePersonality: (id: string) => Promise<void>;
   setActivePersonality: (id: string) => Promise<void>;
@@ -474,6 +474,7 @@ export const useStore = create<AppState>((set, get) => ({
     const { user } = get();
     if (!user) return;
 
+    console.log('Loading personalities for user:', user.id);
     const { data, error } = await supabase
       .from('personalities')
       .select('*')
@@ -481,51 +482,99 @@ export const useStore = create<AppState>((set, get) => ({
       .order('created_at', { ascending: false });
 
     if (!error && data) {
+      console.log('Loaded personalities:', data.length, data.map(p => ({ id: p.id, name: p.name })));
       set({ personalities: data });
       const active = data.find(p => p.is_active);
       set({ activePersonality: active || null });
+    } else if (error) {
+      console.error('Error loading personalities:', error);
     }
   },
 
-  createPersonality: async (name, prompt, hasMemory = true) => {
-    const { user, settings, assistantService } = get();
+  createPersonality: async (name, prompt, hasMemory = true, file?: File, fileInstruction?: string) => {
+    const { user, settings, integrationService } = get();
     if (!user) return null;
 
     try {
       let assistantId: string | null = null;
+      let files: PersonalityFile[] = [];
 
-      // Create OpenAI Assistant if API key is available
+      // Create OpenAI Assistant with files if API key is available
       if (settings?.openai_api_key) {
         try {
-          assistantService.setApiKey(settings.openai_api_key.trim());
-          const assistant = await assistantService.createAssistant({
-            name,
-            instructions: prompt,
-            model: settings.model || 'gpt-4o',
-            tools: [] // Don't add file_search tool initially
-          });
-          assistantId = assistant.id;
+          integrationService.setApiKey(settings.openai_api_key.trim());
+
+          // Use IntegrationService to create personality with files
+          if (file) {
+            const result = await integrationService.createPersonalityWithFiles(
+              {
+                name,
+                prompt,
+                has_memory: hasMemory,
+                file_instruction: fileInstruction
+              },
+              [file]
+            );
+            assistantId = result.personality.openai_assistant_id!;
+            files = result.files.map(f => ({
+              openai_file_id: f.file_id,
+              file_name: f.file_name,
+              file_size: f.file_size,
+              file_type: f.file_type,
+              status: 'ready' as const,
+              uploaded_at: new Date().toISOString(),
+            }));
+          } else {
+            // Create assistant without files using separate assistant service
+            const { assistantService } = get();
+            assistantService.setApiKey(settings.openai_api_key.trim());
+            const assistant = await assistantService.createAssistant({
+              name,
+              instructions: prompt,
+              model: settings.model || 'gpt-4o',
+              tools: []
+            });
+            assistantId = assistant.id;
+          }
         } catch (error) {
           console.warn('Failed to create OpenAI Assistant:', error);
           // Continue with personality creation even if Assistant creation fails
         }
       }
 
+      // Create personality with fields that exist (excluding file_instruction for now due to cache)
+      console.log('Creating personality in database with:', { user_id: user.id, name, prompt, assistantId, files: files.length });
+      const insertData: any = {
+        user_id: user.id,
+        name,
+        prompt,
+        is_active: false,
+        has_memory: hasMemory,
+        openai_assistant_id: assistantId,
+        files: files
+      };
+      
+      // Try to add file_instruction if available
+      if (fileInstruction) {
+        insertData.file_instruction = fileInstruction;
+      }
+      
       const { data, error } = await supabase
         .from('personalities')
-        .insert({
-          user_id: user.id,
-          name,
-          prompt,
-          is_active: false,
-          has_memory: hasMemory,
-          openai_assistant_id: assistantId
-        })
+        .insert(insertData)
         .select()
         .single();
+        
+      if (error) {
+        console.error('Database insert error:', error);
+        throw new Error(`Database error: ${error.message}`);
+      }
+
+      // All fields are already saved directly in the insert above
 
       if (!error && data) {
-        set(state => ({ personalities: [data, ...state.personalities] }));
+        // Перезагрузить полный список personalities из БД для синхронизации
+        await get().loadPersonalities();
         return data;
       }
       return null;
